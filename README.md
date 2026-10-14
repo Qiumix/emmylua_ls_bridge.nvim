@@ -16,6 +16,10 @@ discovery (it watches buffers for `require()` / `---@module "x"` and resolves ea
 reference to the owning plugin), so plugins are only indexed once a buffer
 actually references them.
 
+And because `emmylua_ls` indexes libraries almost instantaneously, those on-demand
+updates are effectively free: you get the whole lazydev workflow with sub-second
+type resolution -- in practice a noticeably better experience than `lua_ls`.
+
 Static libraries (e.g. Neovim `vim.*` stubs, `$VIMRUNTIME`, vendored deps) still
 belong in your `.emmyrc.json`; this plugin only handles the dynamic, per-buffer
 part.
@@ -29,12 +33,61 @@ part.
 
 ## Installation
 
-The plugin ships its own `after/lsp/emmylua_ls.lua`, so all a user needs is to
-load the plugin and enable the server:
+The plugin ships its own `after/lsp/emmylua_ls.lua`, and Neovim only reads
+`lsp/<name>.lua` from `runtimepath` **while resolving the server config**. So the
+plugin must already be loaded **before** you call `vim.lsp.enable("emmylua_ls")` --
+otherwise the file is never read and the bridge silently does nothing.
+
+**load the plugin first, enable the server last.**
+
+### lazy.nvim
+
+Declaring lazydev as a `dependencies` entry makes lazy.nvim load it before the
+bridge. Any lazy trigger is fine, the ordering is what matters:
 
 ```lua
-vim.lsp.enable("emmylua_ls")
+{
+  "qiumix/emmylua_ls_bridge.nvim",
+  dependencies = { "folke/lazydev.nvim" },
+  ft = "lua",
+}
+
+vim.lsp.enable("emmylua_ls") -- after the plugin has loaded
 ```
+
+### vim.pack
+
+`vim.pack` has no dependency resolution, so load lazydev yourself first and
+enable the server last:
+
+```lua
+vim.pack.add({
+  { src = "https://github.com/folke/lazydev.nvim" },
+  { src = "https://github.com/qiumix/emmylua_ls_bridge.nvim" },
+})
+
+require("lazydev").setup() -- 1. lazydev first
+require("emmylua_ls_bridge").setup() -- 2. then the bridge
+
+vim.lsp.enable("emmylua_ls") -- 3. enable after both are loaded
+```
+
+## Usage
+
+Annotate the module first with `---@module`, then use its types with `---@type`.
+lazydev picks the annotation up, adds the owning plugin to the workspace
+libraries, and `emmylua_ls` resolves the types:
+
+```lua
+---@module "which-key"
+---@type wk.Spec
+local keys = {
+  { "<leader>f", group = "find" },
+}
+```
+
+`which-key.nvim` only enters the workspace library once a buffer references it --
+nothing is indexed up front, and the types are available right after.
 
 ## How it works
 
