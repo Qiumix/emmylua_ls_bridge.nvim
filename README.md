@@ -5,30 +5,55 @@ libraries into [emmylua_ls](https://github.com/EmmyLuaLs/emmylua-analyzer-rust).
 
 ## Why
 
-`emmylua_ls` reads `workspace.library` statically and has no glob support, and
-`lazydev.nvim` emits LuaLS-shaped settings (`Lua.workspace.library`) that
-`emmylua_ls` ignores. So with `emmylua_ls` you lose the "plugin types show up
-after you `require()` them" experience you get from `lua_ls` + lazydev.
+`emmylua_ls` has no glob support for `workspace.library`, so plugin libraries
+must be added dynamically. `lazydev.nvim` already does the hard part: it watches
+Lua buffers for `require()` / `---@module "x"` and resolves each reference to the
+owning plugin.
 
-This plugin re-publishes lazydev's library list as `emmylua.workspace.library` --
-the only scope `emmylua_ls` honours for Neovim clients. lazydev already does the
-discovery (it watches buffers for `require()` / `---@module "x"` and resolves each
-reference to the owning plugin), so plugins are only indexed once a buffer
-actually references them.
+For Neovim clients, stock `emmylua_ls` fetches both the `Lua` and `emmylua`
+client config scopes and keeps only the **last non-empty** one. As soon as any
+tool sets `emmylua` settings (this plugin sets `emmylua.codeLens` /
+`emmylua.hint`, for example), the `Lua.workspace.library` list that lazydev
+publishes is discarded. This plugin republishes the effective library list as
+`emmylua.workspace.library`, which is the scope stock `emmylua_ls` actually uses
+when `emmylua` is present.
 
-And because `emmylua_ls` indexes libraries almost instantaneously, those on-demand
-updates are effectively free: you get the whole lazydev workflow with sub-second
-type resolution -- in practice a noticeably better experience than `lua_ls`.
+A patched server merges the two scopes instead. The bridge still works there
+(duplicates are deduplicated by the config merger), and its `---@type`
+discovery remains useful.
 
-Static libraries (e.g. Neovim `vim.*` stubs, `$VIMRUNTIME`, vendored deps) still
+It also adds `---@type` family discovery on top of lazydev. lazydev only scans
+`require()` / `---@module`, so a dotted type reference like `zpack.Spec` did not
+load `zpack.nvim` on its own. The bridge scans doc comments for dotted roots and
+resolves them with lazydev's package resolver, so this works without an extra
+`@module`:
+
+```lua
+---@type zpack.Spec
+local spec = {
+  "mikesmithgh/kitty-scrollback.nvim",
+}
+return spec
+```
+
+Because `zpack.Spec` carries the module root `zpack`, no per-file or per-type
+declaration is needed. Undotted types (`LazySpec`, `MySpec`) still need a
+`---@module` fallback or a static library, because their module cannot be
+inferred from the name.
+
+Static libraries (e.g. Neovim stubs, `$VIMRUNTIME/lua`, vendored deps) still
 belong in your `.emmyrc.json`; this plugin only handles the dynamic, per-buffer
 part.
+
+> This is a compatibility layer. If `emmylua_ls` merges the `Lua` and `emmylua`
+> scopes, and lazydev upstream learns to discover doc type references, the
+> bridge can be retired.
 
 ## Requirements
 
 - Neovim 0.11+ (`vim.lsp.config` / `vim.lsp.enable`)
-- [lazydev.nvim](https://github.com/folke/lazydev.nvim) -- hard dependency; the
-  bridge logs an error if it is missing
+- [lazydev.nvim](https://github.com/folke/lazydev.nvim) -- hard dependency for
+  workspace discovery and module resolution
 - `emmylua_ls` available in `$PATH`
 
 ## Installation
@@ -74,33 +99,49 @@ vim.lsp.enable("emmylua_ls") -- 3. enable after both are loaded
 
 ## Usage
 
-Annotate the module first with `---@module`, then use its types with `---@type`.
-lazydev picks the annotation up, adds the owning plugin to the workspace
-libraries, and `emmylua_ls` resolves the types:
+Use the dotted type directly:
 
 ```lua
----@module "which-key"
----@type wk.Spec
-local keys = {
-  { "<leader>f", group = "find" },
+---@type zpack.Spec
+local spec = {
+  "mikesmithgh/kitty-scrollback.nvim",
 }
+return spec
 ```
 
-`which-key.nvim` only enters the workspace library once a buffer references it --
-nothing is indexed up front, and the types are available right after.
+`zpack.nvim` enters the workspace library once a buffer references it. Nothing
+is indexed up front.
+
+For an undotted type, keep a module hint:
+
+```lua
+---@module "lazy"
+---@type LazySpec
+local spec = { ... }
+return spec
+```
 
 ## How it works
 
 1. `after/lsp/emmylua_ls.lua` runs while Neovim resolves the `emmylua_ls` config
    from `runtimepath` (before the client starts). It requires lazydev, calls
-   `require("emmylua_ls_bridge").setup()`, and returns the server config.
-2. `setup()` registers an `LspAttach` handler and hooks lazydev's `Workspace:add`.
-3. Whenever lazydev discovers a library for a buffer, the bridge pushes the
-   accumulated list to every attached `emmylua_ls` client via
-   `workspace/didChangeConfiguration`.
+   `require("emmylua_ls_bridge").setup()`, and seeds the current buffer's
+   referenced libraries into the server settings.
+2. `setup()` registers `LspAttach` / `LspDetach` handlers and hooks lazydev's
+   `Workspace:add`.
+3. On attach, and on every buffer change, the bridge scans `---@...` doc lines
+   for dotted roots and resolves each root with lazydev's package resolver
+   (`lazydev.pkg`). The resolved plugin root is recorded for **that client**.
+4. lazydev still handles `require()` / `---@module` references through its own
+   workspaces. The bridge hooks lazydev's `Workspace:add` and mirrors those
+   libraries as well, filters out workspace-internal paths, and pushes the
+   per-client list to `emmylua.workspace.library` with a small debounce.
+5. `workspace/didChangeConfiguration` makes `emmylua_ls` re-read its config, so
+   the referenced plugin is indexed and the types resolve.
 
-Because it also syncs on `LspAttach` and during `setup()`, it keeps working when
-the plugin (or lazydev) loads after a client has already attached.
+Because it also runs on `LspAttach`, `VeryLazy` and a scheduled setup pass, it
+keeps working when the plugin (or lazydev) loads after a client has already
+attached.
 
 ## Health
 

@@ -4,7 +4,7 @@ function M.check()
   local health = vim.health
   health.start("emmylua_ls_bridge")
 
-  -- lazydev provides the workspace libraries.
+  -- lazydev provides the workspace libraries and module resolution.
   if package.loaded["lazydev.workspace"] then
     health.ok("lazydev.nvim is loaded")
   elseif pcall(require, "lazydev") then
@@ -30,11 +30,10 @@ function M.check()
   end
 
   health.ok(("%d emmylua_ls client(s) attached"):format(#clients))
-  local libs = require("emmylua_ls_bridge").libraries()
-  if #libs == 0 then
-    health.info("no libraries discovered yet (open a Lua buffer that requires a plugin)")
-  else
-    health.info(("%d librar(y/ies) discovered:"):format(#libs))
+  local bridge = require("emmylua_ls_bridge")
+  for _, client in ipairs(clients) do
+    local libs = bridge.libraries(client)
+    health.info(("client %d (%s): %d librar(y/ies)"):format(client.id, client.root_dir or "?", #libs))
     for _, lib in ipairs(libs) do
       health.info("  - " .. lib)
     end

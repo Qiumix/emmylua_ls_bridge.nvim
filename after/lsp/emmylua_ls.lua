@@ -28,16 +28,25 @@ local root_markers2 = {
   "selene.yml",
 }
 
+---@type table<string, any>
+local settings = {
+  emmylua = {
+    codeLens = { enable = true },
+    hint = { enable = true },
+  },
+}
+
+-- Seed the first analysis with libraries referenced by the current buffer.
+-- Without this, the initial didOpen can be analyzed before the bridge's
+-- LspAttach scan pushes the first workspace/didChangeConfiguration.
+require("emmylua_ls_bridge").seed(settings)
+
 ---@type vim.lsp.Config
 return {
   cmd = { "emmylua_ls" },
   filetypes = { "lua" },
   root_markers = { root_markers1, root_markers2, { ".git" } },
-  workspace_required = false,
-  settings = {
-    emmylua = {
-      codeLens = { enable = true },
-      hint = { enable = true },
-    },
-  },
+  workspace_required = true,
+  settings = settings,
+  exit_timeout = 1,
 }
